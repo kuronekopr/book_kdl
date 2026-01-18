@@ -1,82 +1,84 @@
-# 詳細設計書: Gemini 自動化モジュール (Gemini Ops)
+# 詳細設計書: Gemini 自動化モジュール (Coordinate-Based Implementation)
 
-ソースコード `gemini_ops.py` の実装に基づく詳細設計仕様書です。
+本ドキュメントは、現在運用されている `gemini_automation.py` および `gemini_ops.py` の実装状態を反映した詳細設計書です。
+初期の画像認識ベースの設計から、座標指定ベースの手続き型実装へと移行しています。
 
 ## 1. 概要
-本モジュールは、Google Gemini の Web インターフェースおよび Google スプレッドシートの操作を自動化するための機能を提供します。画像認識 (`pyautogui` 経由) と UI Automation (`pywinauto`) を組み合わせ、ロバストな操作を実現しています。
+本システムは、ハードコードされた画面座標と `pyautogui` を使用して、Google Gemini Web インターフェースを操作し、ドキュメント処理を行います。
+処理は `Google Drive/My Drive/book_kdl` フォルダ内の DOCX ファイルリスト（ハードコード定義）に対して順次実行されます。
 
 ## 2. モジュール構成
-- **ファイル名**: `gemini_ops.py`
-- **主な依存ライブラリ**: `pyautogui`, `pywinauto`, `os`, `time`
-- **内部依存**: `config`, `ui_helpers`
+- **メインスクリプト**: `gemini_automation.py`
+  - 実行エントリーポイント (`main`)
+  - 座標定義
+  - 手続き型処理フロー (`process_single_file`)
+- **操作ライブラリ**: `gemini_ops.py`
+  - 初期のクラス定義 (`GeminiAutomation`, `SpreadsheetAutomation`) が残存しているが、大半のメソッドは未使用。
+  - `activate_gemini` や `select_gem` など一部のウィンドウ制御系メソッドのみ使用。
 
-## 3. クラス設計
+## 3. 定数定義 (座標設定)
+`gemini_automation.py` 内で定義されている主要な操作座標です。環境依存性が高いため、解像度やウィンドウ配置が変わる場合は再調整が必要です。
 
-### 3.1 クラス: `GeminiAutomation`
-Gemini Web UI に対する一連の操作を管理します。各操作には、画像認識による UI 操作と、失敗時のキーボード操作などのフォールバック機構が実装されています。
-
-#### メソッド一覧
-
-| メソッド名 | 概要 | 実装ロジック |
+| 変数名 | 座標 (x, y) | 説明 |
 | :--- | :--- | :--- |
-| `__init__` | 初期化 | `RetryHandler` インスタンスを初期化し、リトライ制御を準備する。 |
-| `find_gemini_window` | ウィンドウ検索 | `pywinauto` を使用し、タイトルに `GEMINI_WINDOW_TITLE` (config定義) を含むウィンドウを検索して返す。 |
-| `activate_gemini` | Gemini アクティブ化 | `find_gemini_window` で取得したウィンドウに対し `set_focus()` を実行。失敗時はリトライを行う。 |
-| `select_gem` | Gem 選択 | 優先: `gem_button.png` 画像認識クリック。<br>フォールバック: キーボード操作 (実装予定/汎用待機)。 |
-| `input_prompt` | プロンプト入力 | `pyautogui.typewrite` を使用して文字列 (デフォルト: "GEM") を入力する。 |
-| `click_upload` | アップロードボタン押下 | 優先: `upload_button.png` 画像認識クリック。<br>フォールバック: 汎用クリック処理 (実装予定)。 |
-| `upload_file_dialog` | ファイル選択処理 | ファイルアップロードダイアログ制御。<br>1. ダイアログ待機<br>2. Windowsパス形式への置換<br>3. パス文字列の入力と Enter 押下 |
-| `execute_prompt` | プロンプト実行 | 優先: `send_button.png` 画像認識クリック。<br>フォールバック: `Enter` キー押下。 |
-| `wait_for_completion` | 完了待機 | `spreadsheet_button.png` が画面に出現するのを待機 (生成完了の合図)。<br>タイムアウト時は固定時間待機に切り替え。 |
-| `open_spreadsheet` | スプレッドシート展開 | 生成結果の「スプレッドシートで開く」ボタンをクリック。<br>優先: 画像認識 (`wait_and_click_image`)。<br>フォールバック: `Enter` キー (フォーカスがあると仮定)。 |
-| `confirm_spreadsheet_dialog` | ダイアログ確認 | スプレッドシート作成確認ダイアログが出た場合の `Enter` 押下による承認処理。 |
+| `upload_butto1_x/y` | (675, 1942) | アップロードダイアログ呼び出し等のボタン |
+| `upload_butto2_x/y` | (730, 1731) | 予備/追加のアップロード操作点 |
+| `gemi_send_x/y` | (1717, 1940) | Gemini プロンプト送信ボタン |
+| `ans_focus_x/y` | (1162, 439) | 回答エリアへのフォーカス |
+| `sp_sel1` ～ `sp_sel6` | (各所) | スプレッドシート生成オプションやチェックボックスの選択操作 |
+| `kdl_focus_x/y` | (896, 34) | マスターファイル (KDL_20260115) ウィンドウのフォーカス位置 |
+| `sp_close_x/y` | (738, 21) | 生成された一時スプレッドシートタブの閉じるボタン |
+| `gem_focus_x/y` | (87, 20) | Gemini タブへの復帰フォーカス |
 
-### 3.2 クラス: `SpreadsheetAutomation`
-ブラウザで開かれたスプレッドシートおよび集約用マスターシートの操作を行います。
+## 4. 処理詳細フロー (`gemini_automation.py`)
 
-#### メソッド一覧
+### メインルーチン (`main`)
+1. **初期化**: `GeminiAutomation`, `SpreadsheetAutomation` のインスタンス化。
+2. **対象リスト定義**: DOCXファイル名のハードコードリストを使用（`get_docx_files` は使用停止）。
+3. **ループ処理**: 各ファイルについて `process_single_file` を呼び出す。
 
-| メソッド名 | 概要 | 実装ロジック |
-| :--- | :--- | :--- |
-| `find_spreadsheet_window` | ウィンドウ検索 | 指定されたタイトルパターンを含むウィンドウを `pywinauto` で検索。 |
-| `copy_data` | データコピー | 現在開いているシートのデータをコピー。<br>1. `Ctrl+Home` (先頭へ)<br>2. `Down` (ヘッダー回避)<br>3. `Ctrl+Shift+End` (全範囲選択)<br>4. `Ctrl+C` (コピー) |
-| `activate_master_sheet` | マスターシート切替 | 引数で指定された名称 (例: `KDL_20260115`) のウィンドウを検索しアクティブ化。 |
-| `paste_data` | データ貼り付け | マスターシートの末尾に追記。<br>1. `Ctrl+End` (最終行へ)<br>2. `Down` (次の行へ)<br>3. `Home` (A列へ)<br>4. `Ctrl+Shift+V` (値貼り付け) |
-| `close_current` | 現在閉じる | `Ctrl+W` を送信して現在のアクティブタブ/ウィンドウを閉じる。 |
+### ファイル処理ルーチン (`process_single_file`)
+各ファイルに対して以下のステップを順次実行します。待機は `time.sleep()` で固定時間制御されています。
 
-## 4. 処理フロー
+1. **準備**
+   - ファイル名をクリップボードにコピー (`clipboard.copy`)。
+   - `gemini.activate_gemini()`: Geminiウィンドウをアクティブ化。
+   - `gemini.select_gem()`: Gemを選択。
 
-```mermaid
-sequenceDiagram
-    participant Main as Main Script
-    participant Gem as GeminiAutomation
-    participant Sheet as SpreadsheetAutomation
+2. **アップロードと入力** (座標操作)
+   - `upload_butto1` クリック。
+   - `upload_butto2` クリック (ファイル選択メニュー操作と推測)。
+   - `Ctrl+V`: クリップボードのファイル名を貼り付け。
+   - `Enter`: ファイル確定。
+   - **待機 (10秒)**: アップロード完了待ち。
+   - `gemi_send`: 送信ボタンクリック。
 
-    Main->>Gem: activate_gemini()
-    Main->>Gem: select_gem()
-    Main->>Gem: input_prompt("GEM")
-    Main->>Gem: click_upload()
-    Main->>Gem: upload_file_dialog(filepath)
-    Main->>Gem: execute_prompt()
-    Main->>Gem: wait_for_completion()
-    Main->>Gem: open_spreadsheet()
-    
-    Gem-->>Main: Spreadsheet Opened
-    
-    Main->>Sheet: copy_data() (A2:Last)
-    Main->>Sheet: close_current()
-    
-    Main->>Sheet: activate_master_sheet("KDL_20260115")
-    Main->>Sheet: paste_data() (Append Values)
-```
+3. **実行と待機**
+   - **待機 (120秒)**: Geminiの生成処理およびスプレッドシート作成待ち。
+   - `ans_focus`: 回答エリアをクリック。
+   - `End` キー: 画面下部へスクロール。
 
-## 5. UI ヘルパーと設定
-コード内の `ui_helpers` および `config` モジュールへの参照から、以下の機能が外部化されていることが確認できます。
+4. **結果抽出 (スプレッドシート操作)**
+   - `sp_sel1` ～ `sp_sel6` を順次クリック: 生成オプションの選択やダウンロード設定等。
+   - `Ctrl+A`: 全選択。
+   - `Ctrl+C`: コピー。
 
-- **画像認識**: `find_image_on_screen`, `click_image`, `wait_for_image` により、OpenCVベースのテンプレートマッチングを利用。
-- **リトライ制御**: `RetryHandler` クラスにより、不安定なUI操作に対する再試行ロジックを一元管理。
-- **待機設定**: `WAIT_SHORT`, `WAIT_MEDIUM` 等の定数により、アクション間のタイミングを調整可能。
+5. **マスタースプレッドシートへの追記**
+   - `kdl_focus`: マスターファイルウィンドウをクリックしてアクティブ化。
+   - `Ctrl+Home`: データの先頭へ。
+   - `Ctrl+Down` x 2: データの末尾周辺へ移動 (既存データのスキップ)。
+   - `Down`: 新規行へ移動。
+   - `Ctrl+Shift+V`: 値のみ貼り付け。
 
-## 6. 特記事項
-- **ハイブリッド方式**: `pywinauto` による確実なウィンドウ制御と、`pyautogui` による柔軟な画像認識・入力操作を併用している点が特徴。
-- **ロバスト性**: 画像認識失敗時にキーボードショートカット等のフォールバック手段が実装されており、自動化の停止を防ぐ設計となっている。
+6. **終了処理**
+   - `sp_close`: 一時タブを閉じる。
+   - `gem_focus`: Geminiタブへ戻る。
+
+## 5. 既存コードとの乖離 (Unused Code)
+以下のクラスベースメソッドは、現在の `process_single_file` 手続き内では呼び出されていません (詳細は `unused_code_report.md` 参照)。
+- `GeminiAutomation` の `click_upload`, `input_prompt`, `execute_prompt` 等
+- `SpreadsheetAutomation` の全メソッド (`copy_data`, `paste_data` 等)
+
+## 6. 注意事項
+- **座標依存**: 現在の実装は特定の画面解像度とウィンドウ位置に完全に依存しています。ウィンドウサイズ変更やディスプレイ変更で動作しなくなります。
+- **エラー処理**: 画像認識による状態確認（`wait_for_image`）が行われていないため、タイムアウトや予期せぬポップアップに弱くなっています。
